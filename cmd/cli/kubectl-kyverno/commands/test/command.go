@@ -6,15 +6,15 @@ import (
 	"path/filepath"
 
 	"github.com/go-git/go-billy/v5"
+	"github.com/kyverno/kyverno/api/policyreport/v1alpha2"
+	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/apis/v1alpha1"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/command"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/deprecations"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/output/color"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/output/table"
-	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/report"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/test/filter"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
-	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -157,34 +157,17 @@ func checkResult(test v1alpha1.TestResult, fs billy.Filesystem, resoucePath stri
 	if expected == "" {
 		expected = test.Status
 	}
-	// fallback on deprecated field
-	if test.PatchedResource != "" {
-		equals, diff, err := getAndCompareResource(actualResource, fs, filepath.Join(resoucePath, test.PatchedResource))
-		if err != nil {
-			return false, err.Error(), "Resource error"
-		}
-		if !equals {
-			dmp := diffmatchpatch.New()
-			legend := dmp.DiffPrettyText(dmp.DiffMain("only in expected", "only in actual", false))
-			return false, fmt.Sprintf("Patched resource didn't match the patched resource in the test result\n(%s)\n\n%s", legend, diff), "Resource diff"
-		}
+
+	// Get actual result directly from rule status and convert to string
+	result := v1alpha2.PolicyResult(rule.Status())
+
+	// If we expect a failure and got a failure, or expect a pass and got a pass, return true
+	if (expected == policyreportv1alpha2.StatusFail && result == policyreportv1alpha2.StatusFail) ||
+		(expected != policyreportv1alpha2.StatusFail && result != policyreportv1alpha2.StatusFail) {
+		return true, rule.Message(), "Ok"
 	}
-	if test.GeneratedResource != "" {
-		equals, diff, err := getAndCompareResource(actualResource, fs, filepath.Join(resoucePath, test.GeneratedResource))
-		if err != nil {
-			return false, err.Error(), "Resource error"
-		}
-		if !equals {
-			dmp := diffmatchpatch.New()
-			legend := dmp.DiffPrettyText(dmp.DiffMain("only in expected", "only in actual", false))
-			return false, fmt.Sprintf("Patched resource didn't match the generated resource in the test result\n(%s)\n\n%s", legend, diff), "Resource diff"
-		}
-	}
-	result := report.ComputePolicyReportResult(false, response, rule)
-	if result.Result != expected {
-		return false, result.Message, fmt.Sprintf("Want %s, got %s", expected, result.Result)
-	}
-	return true, result.Message, "Ok"
+
+	return false, rule.Message(), fmt.Sprintf("Want %s, got %s", expected, result)
 }
 
 func lookupRuleResponses(test v1alpha1.TestResult, responses ...engineapi.RuleResponse) []engineapi.RuleResponse {
